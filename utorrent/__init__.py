@@ -1,8 +1,11 @@
+__author__ = "Bar Harel"
+__version__ = "0.1"
+__all__ = ["uTorrentAPI"]
+
 import asyncio as _asyncio
 import urllib.parse as _parse
 import logging as _logging
 import re as _re
-import warnings as _warnings
 
 
 from functools import wraps as _wraps
