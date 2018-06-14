@@ -13,9 +13,10 @@ from datetime import datetime as _datetime
 from pathlib import Path as _Path
 from dataclasses import (dataclass as _dataclass,
                          fields as _fields, field as _field)
-from typing import Union as _Union
+from typing import Union as _Union, List as _List, Dict as _Dict
 import re as _re
-from enum import Enum as _Enum, auto as _auto, Flag as _Flag
+from enum import (Enum as _Enum, auto as _auto, Flag as _Flag,
+                  IntEnum as _IntEnum)
 
 
 from functools import wraps as _wraps
@@ -33,9 +34,15 @@ _IP_NETLOC_RE = _re.compile(
 
 class Priority(_Enum):
     DONT_DOWNLOAD = 0
-    LOW = _auto()
-    NORMAL = _auto()
-    HIGH = _auto()
+    LOW = 1
+    NORMAL = 2
+    HIGH = 3
+
+
+class TorrentJobFlags(_IntEnum):
+    NOT_ALLOWED = -1
+    DISABLED = 0
+    ENABLED = 1
 
 
 class Status(_Flag):
@@ -47,15 +54,6 @@ class Status(_Flag):
     PAUSED = 32
     QUEUED = 64
     LOADED = 128
-
-
-@_dataclass(frozen=True)
-class File:
-    name: str
-    path: _Path
-    size: int
-    downloaded: int
-    priority: Priority
 
 
 class _cachedproperty:
@@ -72,8 +70,47 @@ class _cachedproperty:
         return result
 
 
+class _JSONConvertable:
+    """Mixin class that allows creating a dataclass from a JSON object"""
+    @_cachedproperty
+    @classmethod
+    def _FIELD_INDEX_TABLE(cls):
+        return {field.name: index for index, field
+                in enumerate(_fields(cls))}
+
+    @classmethod
+    def from_json(cls, json):
+        attributes = list(json)
+        indicies_table = cls._FIELD_INDEX_TABLE
+        for key, func in cls._JSON_CONVERSION_TABLE.items():
+            index = indicies_table[key]
+            attributes[index] = func(attributes[index])
+        return cls(*attributes)
+
+
 @_dataclass(frozen=True)
-class Torrent:
+class File(_JSONConvertable):
+    name: _Path  # Path relative to torrent folder
+    size: int
+    downloaded: int
+    priority: Priority
+    _unknown_1: int = _field(repr=False)
+    pieces: int
+    _unknown_2: bool = _field(repr=False)
+    _unknown_3: int = _field(repr=False)
+    _unknown_4: int = _field(repr=False)
+    _unknown_5: int = _field(repr=False)
+    _unknown_6: int = _field(repr=False)
+    _unknown_7: int = _field(repr=False)
+
+    _JSON_CONVERSION_TABLE = {
+        "priority": Priority,
+        "name": _Path
+    }
+
+
+@_dataclass(frozen=True)
+class Torrent(_JSONConvertable):
     hash: str
     status: Status
     name: str
@@ -127,26 +164,54 @@ class Torrent:
         return cls(*attributes)
 
 
+@_dataclass(frozen=True)
+class TorrentJob(_JSONConvertable):
+    hash: str
+    trackers: _List[str]
+    ulrate: int  # upload limit (bytes per second)
+    dlrate: int  # download limit (bytes per second)
+    superseed: TorrentJobFlags  # initial seeding
+    dht: TorrentJobFlags  # use dht
+    pex: TorrentJobFlags  # use pex
+    seed_override: TorrentJobFlags  # override queueing
+    seed_ratio: int  # per mil
+    seed_time: int  # minimum time to seed in seconds, 0 means no minimum
+    ulslots: int  # upload slots
+
+    _JSON_CONVERSION_TABLE = {
+        "superseed": TorrentJobFlags,
+        "dht": TorrentJobFlags,
+        "pex": TorrentJobFlags,
+        "seed_override": TorrentJobFlags,
+        "trackers": str.splitlines
+    }
+
+
 class uTorrentAPI:
     """Exposes uTorrent's remote web-based API"""
+    @_dataclass
+    class _CacheObj:
+        label: _Dict[str, int] = _field(default_factory=dict)
+        torrents: _Dict[str, Torrent] = _field(default_factory=dict)
 
-    def __init__(self, base_url, username, password, *, loop=None):
+    def __init__(self, base_url: str, username: str,
+                 password: str, *, loop=None):
         """Initializes the API"""
 
-        self.base_url = base_url
-        self.username = username
-        self.password = password
-        self._token = None
+        self.base_url: str = base_url
+        self.username: str = username
+        self.password: str = password
+        self._token: _Union[str, None] = None
         self._loop = loop or _asyncio.get_event_loop()
         self._client = None
         self._connected = False
         self._cache_id = None
-        self._cache = {"label": {}, "torrents": {}}
+        self._cache = self._CacheObj()
 
     def _reset_cache(self):
         self._cache_id = None
-        self._cache["label"].clear()
-        self._cache["torrents"].clear()
+        self._cache.label.clear()
+        self._cache.torrents.clear()
 
     def _renew_token_on_failure(func):
         @_wraps(func)
@@ -203,6 +268,7 @@ class uTorrentAPI:
             xml = await resp.text()
 
         element = _ElementTree.fromstring(xml).find("div[@id='token']")
+        assert element is not None
         token = element.text
         self.token = token
 
@@ -264,7 +330,7 @@ class uTorrentAPI:
 
     @_if_connected
     async def set_priority(self, torrent_hash, priority, *file_indices):
-        args = [("hash", torrent_hash), ("s", priority)]
+        args = [("hash", torrent_hash), ("s", priority.value)]
         args.extend(("f", index) for index in file_indices)
         await self._action("setprio", args)
 
@@ -282,7 +348,7 @@ class uTorrentAPI:
         result = _json.loads(result)
 
         cache = self._cache
-        cached_torrents = cache["torrents"]
+        cached_torrents = cache.torrents
 
         try:
             # Check if it's a cached result (contains the "torrentm" key)
@@ -310,17 +376,37 @@ class uTorrentAPI:
         torrents = map(Torrent.from_json, result[torrent_update_key])
         cached_torrents.update((t.hash, t) for t in torrents)
 
-        cache["label"].update(result["label"])
+        cache.label.update(result["label"])
         self._cache_id = result["torrentc"]
 
         # Make sure we create a weak copy of the dictionaries to prevent
         # cache modification.
-        return (_types.MappingProxyType(cache["label"]),
-                _types.MappingProxyType(cache["torrents"]))
+        return (_types.MappingProxyType(cache.label),
+                _types.MappingProxyType(cache.torrents))
 
     @_if_connected
     async def get_files(self, *torrent_hashes):
-        pass
+        data = await self._simple_action("getfiles", torrent_hashes)
+        json = _json.loads(data)
+        iterator = iter(json["files"])
+        pairwise = zip(iterator, iterator)  # Iterator of hash: file_list
+        return {hash: list(map(File.from_json, files)) for hash, files
+                in pairwise}
+
+    @_if_connected
+    async def get_props(self, *torrent_hashes):
+        data = await self._simple_action("getprops", torrent_hashes)
+        json = _json.loads(data)
+        return list(map(TorrentJob.from_json, json["props"]))
+
+    async def set_props(self, props):
+        params = []
+        for hash, job_props in props.items():
+            params.append(("hash", hash))
+            if "trackers" in job_props:
+                job_props["trackers"] = "\r\n".join(job_props["trackers"])
+            params.extend(job_props.items())
+        await self._action("setprops", params)
 
     async def disconnect(self):
         self._connected = False
