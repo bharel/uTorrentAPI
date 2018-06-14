@@ -12,6 +12,7 @@ setuptools.setup(
     description="uTorrent's unofficial asyncio API",
     long_description=long_description,
     long_description_content_type="text/markdown",
+    install_requires=['aiohttp'],
     url="https://github.com/bharel/uTorrentAPI",
     packages=setuptools.find_packages(),
     classifiers=(
