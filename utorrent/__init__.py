@@ -1,7 +1,8 @@
 __author__ = "Bar Harel"
 __version__ = "0.1.0a"
 __license__ = "MIT"
-__all__ = ["uTorrentAPI", "Priority", "Status", "File", "Torrent"]
+__all__ = ["uTorrentAPI", "Priority", "Status", "File", "Torrent",
+           "TorrentJobFlags", "TorrentJob"]
 
 import asyncio as _asyncio
 from functools import update_wrapper as _update_wrapper
