@@ -86,6 +86,8 @@ class _JSONConvertable:
         for key, func in cls._JSON_CONVERSION_TABLE.items():
             index = indicies_table[key]
             attributes[index] = func(attributes[index])
+
+        assert len(attributes) == len(indicies_table)
         return cls(*attributes)
 
 
@@ -400,6 +402,7 @@ class uTorrentAPI:
         json = _json.loads(data)
         return list(map(TorrentJob.from_json, json["props"]))
 
+    @_if_connected
     async def set_props(self, props):
         params = []
         for hash, job_props in props.items():
