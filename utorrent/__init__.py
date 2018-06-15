@@ -297,7 +297,10 @@ class uTorrentAPI:
             if resp.status != 200:
                 raise ConnectionError(f"Server responded with status "
                                       f"{resp.status} ({resp.reason}).")
-            return await resp.text()
+            response = await resp.text()
+            _logger.debug("Response received with the following data: %s",
+                          response)
+            return response
 
     @_if_connected
     async def start(self, *torrent_hashes):
